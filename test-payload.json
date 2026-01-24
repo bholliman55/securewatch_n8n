@@ -1,0 +1,11 @@
+{
+  "client_id": "CL001",
+  "framework": "HIPAA",
+  "policy_files": [
+    {
+      "filename": "test_policy.txt",
+      "mimetype": "text/plain",
+      "data": "SW5mb3JtYXRpb24gU2VjdXJpdHkgUG9saWN5CgpUaGlzIHBvbGljeSBvdXRsaW5lcyB0aGUgc2VjdXJpdH5tZWFzdXJlcyBhbmQgcHJvY2VkdXJlcyBmb3IgcHJvdGVjdGluZyBlbGVjdHJvbmljIHByb3RlY3RlZCBoZWFsdGggaW5mb3JtYXRpb24gKGVQSEkpLgoKVGhlIG9yZ2FuaXphdGlvbiB3aWxsOgotIEltcGxlbWVudCBhY2Nlc3MgY29udHJvbHMgdG8gZW5zdXJlIG9ubHkgYXV0aG9yaXplZCBwZXJzb25uZWwgY2FuIGFjY2VzcyBlUEhJCi0gRW5jcnlwdCBlUEhJIGluIHRyYW5zaXQgYW5kIGF0IHJlc3QKLSDQdWQgdHJhaWwgYWxsIGFjY2Vzc2VzIHRvIGVQSEkKLSBDb25kdWN0IHJlZ3VsYXIgc2VjdXJpdHkgYXNzZXNzbWVudHMKLSDQsXNzZXNzIHJpc2tzIGFuZCBpbXBsZW1lbnQgcmlzayBtYW5hZ2VtZW50IHByb2Nlc3NlcwoKVGhpcyBwb2xpY3kgY29tcGxpZXMgd2l0aCBISVBhQSBTZWN1cml0eSBSdWxlIDQ1IENGRiAxNjQuMzA4KGEpKDEpIGFuZCAxNjQuMzEyKGEpKDEpLg=="
+    }
+  ]
+}
