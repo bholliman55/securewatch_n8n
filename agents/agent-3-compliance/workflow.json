@@ -1,0 +1,912 @@
+{
+  "name": "Agent 3 - Compliance & Policy Management",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "compliance-check",
+        "authentication": "headerAuth",
+        "options": {
+          "responseMode": "lastNode"
+        }
+      },
+      "id": "node-webhook",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 400],
+      "webhookId": "compliance-check-webhook"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "rules": [
+            {
+              "outputKey": "pdf",
+              "value": "application/pdf",
+              "operation": "equal"
+            },
+            {
+              "outputKey": "docx",
+              "value": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "operation": "equal"
+            },
+            {
+              "outputKey": "text",
+              "value": "text/plain",
+              "operation": "equal"
+            }
+          ]
+        },
+        "value": "={{ $json.body.policy_files[0].mimetype }}",
+        "fallbackOutput": "extra"
+      },
+      "id": "node-switch-filetype",
+      "name": "Check File Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [440, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.pdf.co/v1/pdf/convert/to/text",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.PDFCO_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ url: $json.body.policy_files[0].url || '', inline: true, async: false }) }}",
+        "options": {}
+      },
+      "id": "node-pdf-extract",
+      "name": "Extract Text via PDF.co",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [700, 240]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst body = items[0].json.body;\nconst fileData = body.policy_files[0].data;\nconst buffer = Buffer.from(fileData, 'base64');\n// For DOCX, extract raw text content (XML-based)\nconst text = buffer.toString('utf-8').replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim();\nreturn [{ json: { extractedText: text, fileName: body.policy_files[0].filename, clientId: body.client_id, framework: body.framework || 'auto-detect' } }];"
+      },
+      "id": "node-docx-extract",
+      "name": "Extract DOCX Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst body = items[0].json.body;\nconst fileData = body.policy_files[0].data;\nconst buffer = Buffer.from(fileData, 'base64');\nconst text = buffer.toString('utf-8');\nreturn [{ json: { extractedText: text, fileName: body.policy_files[0].filename, clientId: body.client_id, framework: body.framework || 'auto-detect' } }];"
+      },
+      "id": "node-text-extract",
+      "name": "Extract Plain Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst item = items[0].json;\nlet extractedText = '';\nlet fileName = '';\nlet clientId = '';\nlet framework = '';\n\nif (item.extractedText) {\n  extractedText = item.extractedText;\n  fileName = item.fileName;\n  clientId = item.clientId;\n  framework = item.framework;\n} else if (item.text || item.body) {\n  // From PDF.co response\n  extractedText = item.text || item.body || '';\n  const webhook = $('Webhook Trigger').first().json;\n  fileName = webhook.body.policy_files[0].filename;\n  clientId = webhook.body.client_id;\n  framework = webhook.body.framework || 'auto-detect';\n}\n\nreturn [{ json: { extractedText, fileName, clientId, framework } }];"
+      },
+      "id": "node-merge-text",
+      "name": "Normalize Extracted Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.ANTHROPIC_API_KEY }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 4096, messages: [{ role: 'user', content: 'You are a compliance policy analyst. Analyze the following policy document and return a JSON object with these fields:\\n- framework: the compliance framework this policy aligns with (e.g., SOC2, ISO27001, NIST, HIPAA, PCI-DSS, GDPR)\\n- policy_title: the title or subject of the policy\\n- summary: a 2-3 sentence summary\\n- key_requirements: array of key requirements identified\\n- controls: array of control objectives addressed\\n- completeness_score: number 0-100 indicating how complete this policy is\\n- gaps: array of identified gaps or missing elements\\n- risk_level: High/Medium/Low based on gaps found\\n\\nPolicy text:\\n' + $json.extractedText.substring(0, 8000) }] }) }}",
+        "options": {}
+      },
+      "id": "node-analyze-policy",
+      "name": "Analyze Policy with Claude",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst response = items[0].json;\nconst content = response.content[0].text;\nlet analysis = {};\ntry {\n  const jsonMatch = content.match(/\\{[\\s\\S]*\\}/);\n  analysis = jsonMatch ? JSON.parse(jsonMatch[0]) : { raw: content };\n} catch (e) {\n  analysis = { raw: content, parseError: e.message };\n}\nconst prev = $('Normalize Extracted Text').first().json;\nreturn [{ json: { ...prev, analysis } }];"
+      },
+      "id": "node-parse-analysis",
+      "name": "Parse Policy Analysis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.airtable.com/v0/{{ $env.AIRTABLE_BASE_ID }}/Policy%20Documents",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.AIRTABLE_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ fields: { 'Policy Title': $json.analysis.policy_title || $json.fileName, 'Client ID': $json.clientId, 'Framework': $json.analysis.framework || $json.framework, 'Summary': $json.analysis.summary || '', 'Completeness Score': $json.analysis.completeness_score || 0, 'Risk Level': $json.analysis.risk_level || 'Unknown', 'Key Requirements': JSON.stringify($json.analysis.key_requirements || []), 'Controls': JSON.stringify($json.analysis.controls || []), 'Gaps': JSON.stringify($json.analysis.gaps || []), 'Raw Text': $json.extractedText.substring(0, 10000), 'Upload Date': new Date().toISOString() } }) }}",
+        "options": {}
+      },
+      "id": "node-store-policy",
+      "name": "Store Policy in Airtable",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1680, 400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.airtable.com/v0/{{ $env.AIRTABLE_BASE_ID }}/Compliance%20Requirements?filterByFormula=FIND(%22{{ encodeURIComponent($('Parse Policy Analysis').first().json.analysis.framework || 'SOC2') }}%22%2C+{Framework})",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.AIRTABLE_API_KEY }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-get-requirements",
+      "name": "Get Compliance Requirements",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1920, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst requirements = items[0].json.records || [];\nconst policyData = $('Parse Policy Analysis').first().json;\nreturn [{ json: { requirements: requirements.map(r => ({ id: r.id, ...r.fields })), policyAnalysis: policyData.analysis, extractedText: policyData.extractedText, clientId: policyData.clientId, framework: policyData.analysis.framework || policyData.framework } }];"
+      },
+      "id": "node-prep-mapping",
+      "name": "Prepare Mapping Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2160, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.ANTHROPIC_API_KEY }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 4096, messages: [{ role: 'user', content: 'You are a compliance mapper. Given the following policy analysis and compliance requirements, determine the compliance status for each requirement.\\n\\nPolicy Analysis:\\n' + JSON.stringify($json.policyAnalysis) + '\\n\\nPolicy Text (excerpt):\\n' + ($json.extractedText || '').substring(0, 4000) + '\\n\\nRequirements:\\n' + JSON.stringify($json.requirements.slice(0, 50)) + '\\n\\nFor each requirement, return a JSON array of objects with:\\n- requirement_id: the ID from the requirements list\\n- requirement_name: name of the requirement\\n- status: \"Compliant\", \"Non-Compliant\", or \"Partial\"\\n- evidence: brief text explaining why\\n- recommendation: what to do if not fully compliant\\n\\nReturn ONLY the JSON array.' }] }) }}",
+        "options": {}
+      },
+      "id": "node-map-requirements",
+      "name": "Map Policies to Requirements",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2400, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst response = items[0].json;\nconst content = response.content[0].text;\nlet mappings = [];\ntry {\n  const jsonMatch = content.match(/\\[[\\s\\S]*\\]/);\n  mappings = jsonMatch ? JSON.parse(jsonMatch[0]) : [];\n} catch (e) {\n  mappings = [{ error: e.message, raw: content }];\n}\nconst prev = $('Prepare Mapping Data').first().json;\nreturn mappings.map(m => ({ json: { ...m, clientId: prev.clientId, framework: prev.framework } }));"
+      },
+      "id": "node-parse-mappings",
+      "name": "Parse Compliance Mappings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2640, 400]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "node-loop-update",
+      "name": "Loop Over Mappings",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [2880, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.airtable.com/v0/{{ $env.AIRTABLE_BASE_ID }}/Client%20Compliance%20Status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.AIRTABLE_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ fields: { 'Client ID': $json.clientId, 'Requirement ID': $json.requirement_id, 'Requirement Name': $json.requirement_name || '', 'Framework': $json.framework, 'Status': $json.status, 'Evidence': $json.evidence || '', 'Recommendation': $json.recommendation || '', 'Last Assessed': new Date().toISOString() } }) }}",
+        "options": {}
+      },
+      "id": "node-update-status",
+      "name": "Update Compliance Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3120, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst allMappings = $('Parse Compliance Mappings').all();\nconst nonCompliant = allMappings.filter(m => m.json.status === 'Non-Compliant' || m.json.status === 'Partial');\nreturn nonCompliant.length > 0 ? nonCompliant : [{ json: { noGaps: true } }];"
+      },
+      "id": "node-filter-gaps",
+      "name": "Filter Non-Compliant Requirements",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3360, 400]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "node-loop-gaps",
+      "name": "Loop Over Gaps",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [3600, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.ANTHROPIC_API_KEY }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 4096, messages: [{ role: 'user', content: 'You are a compliance policy writer. Generate a comprehensive policy document to address the following compliance gap:\\n\\nRequirement: ' + ($json.requirement_name || 'Unknown') + '\\nFramework: ' + ($json.framework || 'General') + '\\nCurrent Status: ' + ($json.status || 'Non-Compliant') + '\\nRecommendation: ' + ($json.recommendation || 'Create policy') + '\\n\\nGenerate a complete, professional policy document that addresses this requirement. Include:\\n1. Policy Title\\n2. Purpose\\n3. Scope\\n4. Policy Statement\\n5. Roles and Responsibilities\\n6. Procedures\\n7. Compliance Monitoring\\n8. Review Schedule\\n\\nReturn as structured text.' }] }) }}",
+        "options": {}
+      },
+      "id": "node-generate-policy",
+      "name": "Generate Missing Policy",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3840, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.airtable.com/v0/{{ $env.AIRTABLE_BASE_ID }}/Generated%20Policies",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.AIRTABLE_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ fields: { 'Requirement ID': $('Loop Over Gaps').first().json.requirement_id || '', 'Requirement Name': $('Loop Over Gaps').first().json.requirement_name || '', 'Framework': $('Loop Over Gaps').first().json.framework || '', 'Client ID': $('Loop Over Gaps').first().json.clientId || '', 'Generated Policy': $json.content[0].text.substring(0, 10000), 'Status': 'Draft', 'Generated Date': new Date().toISOString() } }) }}",
+        "options": {}
+      },
+      "id": "node-store-generated",
+      "name": "Store Generated Policy",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4080, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.ANTHROPIC_API_KEY }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 4096, messages: [{ role: 'user', content: 'You are a cloud security engineer. Given the following compliance mappings, map each requirement to specific Azure technical controls.\\n\\nCompliance Mappings:\\n' + JSON.stringify($('Parse Compliance Mappings').all().map(i => i.json).slice(0, 30)) + '\\n\\nFor each mapping, return a JSON array of objects with:\\n- requirement_id: the requirement ID\\n- requirement_name: name\\n- azure_services: array of relevant Azure services\\n- azure_policy_definitions: array of built-in Azure Policy definition names\\n- custom_policy_needed: boolean\\n- control_description: how Azure implements this control\\n\\nReturn ONLY the JSON array.' }] }) }}",
+        "options": {}
+      },
+      "id": "node-map-controls",
+      "name": "Map to Technical Controls",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4400, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst content = items[0].json.content[0].text;\nlet controls = [];\ntry {\n  const jsonMatch = content.match(/\\[[\\s\\S]*\\]/);\n  controls = jsonMatch ? JSON.parse(jsonMatch[0]) : [];\n} catch (e) {\n  controls = [{ error: e.message, raw: content }];\n}\nreturn [{ json: { technicalControls: controls } }];"
+      },
+      "id": "node-parse-controls",
+      "name": "Parse Technical Controls",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4640, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.ANTHROPIC_API_KEY }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 4096, messages: [{ role: 'user', content: 'You are an Azure Policy expert. Generate valid Azure Policy JSON definitions for the following technical controls that need custom policies.\\n\\nTechnical Controls:\\n' + JSON.stringify($json.technicalControls.filter(c => c.custom_policy_needed).slice(0, 10)) + '\\n\\nFor each control needing a custom policy, generate a valid Azure Policy JSON definition with:\\n- name, displayName, description\\n- policyType: \"Custom\"\\n- mode: \"All\" or \"Indexed\"\\n- proper policyRule with if/then conditions\\n- parameters if needed\\n\\nReturn a JSON array of complete Azure Policy definition objects.' }] }) }}",
+        "options": {}
+      },
+      "id": "node-generate-azure-policy",
+      "name": "Generate Azure Policy JSON",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4880, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst content = items[0].json.content[0].text;\nlet policies = [];\nlet validationResults = [];\n\ntry {\n  const jsonMatch = content.match(/\\[[\\s\\S]*\\]/);\n  policies = jsonMatch ? JSON.parse(jsonMatch[0]) : [];\n} catch (e) {\n  return [{ json: { valid: false, error: 'Failed to parse Azure Policy JSON: ' + e.message, raw: content.substring(0, 2000) } }];\n}\n\nfor (const policy of policies) {\n  const issues = [];\n  if (!policy.name) issues.push('Missing name');\n  if (!policy.properties && !policy.policyRule) issues.push('Missing properties or policyRule');\n  const rule = policy.properties?.policyRule || policy.policyRule;\n  if (rule) {\n    if (!rule.if) issues.push('Missing policyRule.if condition');\n    if (!rule.then) issues.push('Missing policyRule.then effect');\n  } else {\n    issues.push('Missing policyRule entirely');\n  }\n  validationResults.push({\n    name: policy.name || 'unknown',\n    valid: issues.length === 0,\n    issues\n  });\n}\n\nreturn [{ json: { policies, validationResults, allValid: validationResults.every(v => v.valid) } }];"
+      },
+      "id": "node-validate-azure",
+      "name": "Validate Azure Policy JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5120, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.ANTHROPIC_API_KEY }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 4096, messages: [{ role: 'user', content: 'You are a Terraform expert. Generate Terraform code (azurerm provider) to deploy the following Azure Policy definitions and assignments.\\n\\nAzure Policies:\\n' + JSON.stringify($json.policies.slice(0, 10)) + '\\n\\nGenerate complete Terraform code including:\\n1. Required providers block (azurerm)\\n2. azurerm_policy_definition resources for each policy\\n3. azurerm_policy_assignment resources\\n4. Any necessary data sources\\n5. Variables for subscription_id and resource_group\\n\\nReturn ONLY the Terraform code block.' }] }) }}",
+        "options": {}
+      },
+      "id": "node-generate-terraform",
+      "name": "Generate Terraform Code",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [5360, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst terraformContent = items[0].json.content[0].text;\nconst policyData = $('Validate Azure Policy JSON').first().json;\nconst technicalControls = $('Parse Technical Controls').first().json.technicalControls;\nreturn [{ json: { terraformCode: terraformContent, policies: policyData.policies, validationResults: policyData.validationResults, technicalControls } }];"
+      },
+      "id": "node-prep-store-azure",
+      "name": "Prepare Azure Policy Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5600, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.airtable.com/v0/{{ $env.AIRTABLE_BASE_ID }}/Azure%20Policies",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.AIRTABLE_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ fields: { 'Client ID': $('Parse Policy Analysis').first().json.clientId, 'Framework': $('Parse Policy Analysis').first().json.analysis.framework || '', 'Policies JSON': JSON.stringify($json.policies).substring(0, 10000), 'Terraform Code': $json.terraformCode.substring(0, 10000), 'Validation Status': $json.validationResults.every(v => v.valid) ? 'Valid' : 'Has Issues', 'Technical Controls': JSON.stringify($json.technicalControls).substring(0, 10000), 'Generated Date': new Date().toISOString() } }) }}",
+        "options": {}
+      },
+      "id": "node-store-azure",
+      "name": "Store Azure Policies",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [5840, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.ANTHROPIC_API_KEY }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 4096, messages: [{ role: 'user', content: 'Generate a comprehensive compliance report summary in JSON format based on the following data:\\n\\nPolicy Analysis:\\n' + JSON.stringify($('Parse Policy Analysis').first().json.analysis) + '\\n\\nCompliance Mappings:\\n' + JSON.stringify($('Parse Compliance Mappings').all().map(i => ({ requirement: i.json.requirement_name, status: i.json.status })).slice(0, 30)) + '\\n\\nAzure Policy Validation:\\n' + JSON.stringify($('Validate Azure Policy JSON').first().json.validationResults) + '\\n\\nReturn a JSON object with:\\n- executive_summary: 2-3 paragraph overview\\n- overall_compliance_score: percentage number\\n- framework: detected framework\\n- total_requirements: count\\n- compliant_count: count\\n- non_compliant_count: count\\n- partial_count: count\\n- critical_gaps: array of most important gaps\\n- recommended_actions: prioritized array of next steps\\n- azure_policies_generated: count\\n- terraform_ready: boolean\\n- report_date: current date string' }] }) }}",
+        "options": {}
+      },
+      "id": "node-generate-report",
+      "name": "Generate Compliance Report",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [6080, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst reportContent = items[0].json.content[0].text;\nlet report = {};\ntry {\n  const jsonMatch = reportContent.match(/\\{[\\s\\S]*\\}/);\n  report = jsonMatch ? JSON.parse(jsonMatch[0]) : { raw: reportContent };\n} catch (e) {\n  report = { raw: reportContent, parseError: e.message };\n}\n\nconst policyAnalysis = $('Parse Policy Analysis').first().json.analysis;\nconst mappings = $('Parse Compliance Mappings').all().map(i => i.json);\nconst azureData = $('Validate Azure Policy JSON').first().json;\nconst terraformData = $('Prepare Azure Policy Data').first().json;\n\nreturn [{\n  json: {\n    success: true,\n    agent: 'Agent 3 - Compliance & Policy Management',\n    report,\n    details: {\n      policy_analysis: {\n        title: policyAnalysis.policy_title,\n        framework: policyAnalysis.framework,\n        completeness_score: policyAnalysis.completeness_score\n      },\n      compliance_mappings: {\n        total: mappings.length,\n        compliant: mappings.filter(m => m.status === 'Compliant').length,\n        non_compliant: mappings.filter(m => m.status === 'Non-Compliant').length,\n        partial: mappings.filter(m => m.status === 'Partial').length\n      },\n      azure_policies: {\n        count: azureData.policies.length,\n        all_valid: azureData.allValid,\n        terraform_generated: true\n      }\n    }\n  }\n}];"
+      },
+      "id": "node-final-response",
+      "name": "Prepare Final Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [6320, 400]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check File Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check File Type": {
+      "main": [
+        [
+          {
+            "node": "Extract Text via PDF.co",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extract DOCX Text",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extract Plain Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Text via PDF.co": {
+      "main": [
+        [
+          {
+            "node": "Normalize Extracted Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract DOCX Text": {
+      "main": [
+        [
+          {
+            "node": "Normalize Extracted Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Plain Text": {
+      "main": [
+        [
+          {
+            "node": "Normalize Extracted Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Extracted Text": {
+      "main": [
+        [
+          {
+            "node": "Analyze Policy with Claude",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Policy with Claude": {
+      "main": [
+        [
+          {
+            "node": "Parse Policy Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Policy Analysis": {
+      "main": [
+        [
+          {
+            "node": "Store Policy in Airtable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Policy in Airtable": {
+      "main": [
+        [
+          {
+            "node": "Get Compliance Requirements",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Compliance Requirements": {
+      "main": [
+        [
+          {
+            "node": "Prepare Mapping Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Mapping Data": {
+      "main": [
+        [
+          {
+            "node": "Map Policies to Requirements",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map Policies to Requirements": {
+      "main": [
+        [
+          {
+            "node": "Parse Compliance Mappings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Compliance Mappings": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Mappings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Mappings": {
+      "main": [
+        [
+          {
+            "node": "Filter Non-Compliant Requirements",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update Compliance Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Compliance Status": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Mappings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Non-Compliant Requirements": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Gaps",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Gaps": {
+      "main": [
+        [
+          {
+            "node": "Map to Technical Controls",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Generate Missing Policy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Missing Policy": {
+      "main": [
+        [
+          {
+            "node": "Store Generated Policy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Generated Policy": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Gaps",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map to Technical Controls": {
+      "main": [
+        [
+          {
+            "node": "Parse Technical Controls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Technical Controls": {
+      "main": [
+        [
+          {
+            "node": "Generate Azure Policy JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Azure Policy JSON": {
+      "main": [
+        [
+          {
+            "node": "Validate Azure Policy JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Azure Policy JSON": {
+      "main": [
+        [
+          {
+            "node": "Generate Terraform Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Terraform Code": {
+      "main": [
+        [
+          {
+            "node": "Prepare Azure Policy Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Azure Policy Data": {
+      "main": [
+        [
+          {
+            "node": "Store Azure Policies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Azure Policies": {
+      "main": [
+        [
+          {
+            "node": "Generate Compliance Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Compliance Report": {
+      "main": [
+        [
+          {
+            "node": "Prepare Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "SecureWatch",
+      "id": "tag-securewatch"
+    },
+    {
+      "name": "Compliance",
+      "id": "tag-compliance"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-01-28T00:00:00.000Z",
+  "versionId": "1"
+}

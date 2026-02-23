@@ -1,4 +1,13 @@
 {
+  "name": "securewatch-n8n-agents",
+  "version": "1.0.0",
+  "description": "Multi-agent security automation stack for n8n Cloud",
+  "scripts": {
+    "test": "node tests/e2e/run-tests.js",
+    "test:agent1": "node tests/e2e/run-tests.js --agent 1",
+    "test:agent2": "node tests/e2e/run-tests.js --agent 2",
+    "test:agent3": "node tests/e2e/run-tests.js --agent 3"
+  },
   "devDependencies": {
     "dotenv": "^17.2.3"
   }
