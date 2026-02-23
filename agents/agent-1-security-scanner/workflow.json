@@ -1,0 +1,798 @@
+{
+  "name": "Agent 1 - Security Scanner",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "security-scanner-start",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 600],
+      "webhookId": "security-scanner-start"
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "table": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "filterByFormula": "={client_id}='{{ $json.body.client_id }}'",
+        "options": {}
+      },
+      "id": "node-get-targets",
+      "name": "Get Scan Targets",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [440, 600],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "",
+          "name": "Airtable Account"
+        }
+      },
+      "notes": "Reads from 'Scan Targets' table filtered by client_id from webhook body"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Permission Validator\n// Validates that client_id exists and filters to scan_enabled targets\n\nconst items = $input.all();\nconst webhookData = $('Webhook Trigger').first().json.body;\nconst clientId = webhookData.client_id;\n\nif (!clientId) {\n  throw new Error('client_id is required in the request body');\n}\n\nif (items.length === 0) {\n  throw new Error(`No scan targets found for client_id: ${clientId}`);\n}\n\n// Filter to only scan_enabled targets\nconst enabledTargets = items.filter(item => {\n  const fields = item.json.fields || item.json;\n  return fields.scan_enabled === true || fields.scan_enabled === 'true';\n});\n\nif (enabledTargets.length === 0) {\n  throw new Error(`No scan-enabled targets found for client_id: ${clientId}`);\n}\n\n// Pass through validated targets with metadata\nreturn enabledTargets.map(item => {\n  const fields = item.json.fields || item.json;\n  return {\n    json: {\n      client_id: clientId,\n      target_id: fields.target_id || item.json.id,\n      hostname: fields.hostname,\n      ip_address: fields.ip_address,\n      target_type: fields.target_type || 'domain',\n      scan_enabled: true,\n      scan_initiated_at: new Date().toISOString()\n    }\n  };\n});\n"
+      },
+      "id": "node-permission-validator",
+      "name": "Permission Validator",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 600]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.shodan.io/shodan/host/{{ $json.ip_address }}",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "key",
+              "value": "={{ $env.SHODAN_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "allowUnauthorizedCerts": false
+        }
+      },
+      "id": "node-shodan",
+      "name": "Shodan Host Lookup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Shodan Results\nconst shodanData = $input.first().json;\nconst findings = [];\n\n// Check open ports\nif (shodanData.ports && shodanData.ports.length > 0) {\n  const riskyPorts = [21, 23, 445, 3389, 5900, 8080, 8443];\n  for (const port of shodanData.ports) {\n    const isRisky = riskyPorts.includes(port);\n    findings.push({\n      source: 'shodan',\n      type: 'open_port',\n      detail: `Port ${port} is open`,\n      severity: isRisky ? 'high' : 'info',\n      port: port\n    });\n  }\n}\n\n// Check for vulnerabilities\nif (shodanData.vulns && shodanData.vulns.length > 0) {\n  for (const vuln of shodanData.vulns) {\n    findings.push({\n      source: 'shodan',\n      type: 'vulnerability',\n      detail: `CVE detected: ${vuln}`,\n      severity: 'critical',\n      cve: vuln\n    });\n  }\n}\n\nreturn [{\n  json: {\n    scanner: 'shodan',\n    ip: shodanData.ip_str || '',\n    os: shodanData.os || 'unknown',\n    org: shodanData.org || '',\n    total_ports: (shodanData.ports || []).length,\n    findings: findings\n  }\n}];\n"
+      },
+      "id": "node-parse-shodan",
+      "name": "Parse Shodan Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 200]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.ssllabs.com/api/v3/analyze?host={{ $json.hostname }}&startNew=on&all=done",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "node-ssllabs-initiate",
+      "name": "SSL Labs Initiate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 400]
+    },
+    {
+      "parameters": {
+        "amount": 60,
+        "unit": "seconds"
+      },
+      "id": "node-wait-ssl",
+      "name": "Wait for SSL Analysis",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1200, 400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.ssllabs.com/api/v3/analyze?host={{ $('Permission Validator').first().json.hostname }}&all=done",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "node-ssllabs-results",
+      "name": "Get SSL Results",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, 400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.securitytrails.com/v1/domain/{{ $json.hostname }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "APIKEY",
+              "value": "={{ $env.SECURITYTRAILS_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "node-securitytrails",
+      "name": "SecurityTrails DNS Lookup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 600]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://urlscan.io/api/v1/scan/",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "API-Key",
+              "value": "={{ $env.URLSCAN_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "url",
+              "value": "=https://{{ $json.hostname }}"
+            },
+            {
+              "name": "visibility",
+              "value": "private"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "node-urlscan-submit",
+      "name": "URLScan Submit",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 800]
+    },
+    {
+      "parameters": {
+        "amount": 30,
+        "unit": "seconds"
+      },
+      "id": "node-wait-urlscan",
+      "name": "Wait for URLScan",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1200, 800]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://urlscan.io/api/v1/result/{{ $('URLScan Submit').first().json.uuid }}/",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "node-urlscan-results",
+      "name": "Get URLScan Results",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, 800]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://www.virustotal.com/api/v3/domains/{{ $json.hostname }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-apikey",
+              "value": "={{ $env.VIRUSTOTAL_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "node-virustotal",
+      "name": "VirusTotal Domain Report",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 1000]
+    },
+    {
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 5,
+        "options": {}
+      },
+      "id": "node-merge",
+      "name": "Merge All Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1700, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregate Scan Results - compute risk_score from findings\nconst allItems = $input.all();\nconst webhookData = $('Permission Validator').first().json;\n\nlet allFindings = [];\nlet scannerResults = {};\n\nfor (const item of allItems) {\n  const data = item.json;\n  const scanner = data.scanner || 'unknown';\n  scannerResults[scanner] = data;\n\n  if (data.findings && Array.isArray(data.findings)) {\n    allFindings = allFindings.concat(data.findings);\n  }\n}\n\n// Calculate risk score based on severity counts\nconst severityCounts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };\nfor (const finding of allFindings) {\n  const sev = (finding.severity || 'info').toLowerCase();\n  if (severityCounts.hasOwnProperty(sev)) {\n    severityCounts[sev]++;\n  }\n}\n\nconst riskScore = Math.min(100,\n  severityCounts.critical * 25 +\n  severityCounts.high * 15 +\n  severityCounts.medium * 8 +\n  severityCounts.low * 3 +\n  severityCounts.info * 1\n);\n\nlet riskLevel = 'low';\nif (riskScore >= 80) riskLevel = 'critical';\nelse if (riskScore >= 60) riskLevel = 'high';\nelse if (riskScore >= 35) riskLevel = 'medium';\n\nreturn [{\n  json: {\n    client_id: webhookData.client_id,\n    hostname: webhookData.hostname,\n    ip_address: webhookData.ip_address,\n    scan_initiated_at: webhookData.scan_initiated_at,\n    scan_completed_at: new Date().toISOString(),\n    risk_score: riskScore,\n    risk_level: riskLevel,\n    severity_counts: severityCounts,\n    total_findings: allFindings.length,\n    findings: allFindings,\n    scanner_results: scannerResults\n  }\n}];\n"
+      },
+      "id": "node-aggregate",
+      "name": "Aggregate Scan Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1940, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare Scan Results for Airtable storage\nconst data = $input.first().json;\nconst scanResultId = `SCAN-${data.client_id}-${Date.now()}`;\n\nreturn [{\n  json: {\n    scan_result_id: scanResultId,\n    client_id: data.client_id,\n    hostname: data.hostname,\n    ip_address: data.ip_address,\n    scan_initiated_at: data.scan_initiated_at,\n    scan_completed_at: data.scan_completed_at,\n    risk_score: data.risk_score,\n    risk_level: data.risk_level,\n    total_findings: data.total_findings,\n    critical_count: data.severity_counts.critical,\n    high_count: data.severity_counts.high,\n    medium_count: data.severity_counts.medium,\n    low_count: data.severity_counts.low,\n    info_count: data.severity_counts.info,\n    scanner_results_json: JSON.stringify(data.scanner_results),\n    findings: data.findings,\n    severity_counts: data.severity_counts\n  }\n}];\n"
+      },
+      "id": "node-prepare",
+      "name": "Prepare Scan Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2180, 600]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "table": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "scan_result_id": "={{ $json.scan_result_id }}",
+            "client_id": "={{ $json.client_id }}",
+            "hostname": "={{ $json.hostname }}",
+            "ip_address": "={{ $json.ip_address }}",
+            "scan_initiated_at": "={{ $json.scan_initiated_at }}",
+            "scan_completed_at": "={{ $json.scan_completed_at }}",
+            "risk_score": "={{ $json.risk_score }}",
+            "risk_level": "={{ $json.risk_level }}",
+            "total_findings": "={{ $json.total_findings }}",
+            "critical_count": "={{ $json.critical_count }}",
+            "high_count": "={{ $json.high_count }}",
+            "medium_count": "={{ $json.medium_count }}",
+            "low_count": "={{ $json.low_count }}",
+            "info_count": "={{ $json.info_count }}",
+            "scanner_results_json": "={{ $json.scanner_results_json }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "node-store-results",
+      "name": "Store Results in Airtable",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [2420, 600],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "",
+          "name": "Airtable Account"
+        }
+      },
+      "notes": "Creates record in 'Scan Results' table"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Split Findings into individual items for loop processing\nconst data = $('Prepare Scan Results').first().json;\nconst scanResultId = data.scan_result_id;\n\nif (!data.findings || data.findings.length === 0) {\n  return [{ json: { _empty: true, scan_result_id: scanResultId } }];\n}\n\nreturn data.findings.map((finding, index) => ({\n  json: {\n    finding_id: `${scanResultId}-F${String(index + 1).padStart(3, '0')}`,\n    scan_result_id: scanResultId,\n    source: finding.source || 'unknown',\n    type: finding.type || 'general',\n    detail: finding.detail || '',\n    severity: finding.severity || 'info',\n    port: finding.port || null,\n    cve: finding.cve || null,\n    raw_data: JSON.stringify(finding)\n  }\n}));\n"
+      },
+      "id": "node-split-findings",
+      "name": "Split Findings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2660, 600]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "node-loop-findings",
+      "name": "Loop Over Findings",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [2900, 600]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "table": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "finding_id": "={{ $json.finding_id }}",
+            "scan_result_id": "={{ $json.scan_result_id }}",
+            "source": "={{ $json.source }}",
+            "type": "={{ $json.type }}",
+            "detail": "={{ $json.detail }}",
+            "severity": "={{ $json.severity }}",
+            "port": "={{ $json.port }}",
+            "cve": "={{ $json.cve }}",
+            "raw_data": "={{ $json.raw_data }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "node-store-findings",
+      "name": "Store Detailed Findings",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [3140, 600],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "",
+          "name": "Airtable Account"
+        }
+      },
+      "notes": "Creates records in 'Scan Findings Detail' table"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate HTML Report\nconst data = $('Aggregate Scan Results').first().json;\nconst prepared = $('Prepare Scan Results').first().json;\n\nconst riskColor = {\n  critical: '#dc3545',\n  high: '#fd7e14',\n  medium: '#ffc107',\n  low: '#28a745'\n};\n\nconst color = riskColor[data.risk_level] || '#6c757d';\n\nconst findingsRows = data.findings.map(f => `\n  <tr>\n    <td>${f.source}</td>\n    <td>${f.type}</td>\n    <td>${f.detail}</td>\n    <td style=\"color:${riskColor[f.severity] || '#6c757d'}; font-weight:bold;\">${f.severity.toUpperCase()}</td>\n  </tr>\n`).join('');\n\nconst html = `\n<!DOCTYPE html>\n<html>\n<head>\n  <meta charset=\"UTF-8\">\n  <title>Security Scan Report - ${data.hostname}</title>\n  <style>\n    body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }\n    .container { max-width: 900px; margin: 0 auto; background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }\n    h1 { color: #333; border-bottom: 2px solid #eee; padding-bottom: 10px; }\n    .risk-badge { display: inline-block; padding: 8px 20px; border-radius: 4px; color: #fff; font-size: 1.2em; font-weight: bold; }\n    .summary { display: flex; gap: 20px; margin: 20px 0; }\n    .summary-card { flex: 1; padding: 15px; border-radius: 6px; background: #f8f9fa; text-align: center; }\n    .summary-card h3 { margin: 0 0 5px 0; color: #666; font-size: 0.85em; text-transform: uppercase; }\n    .summary-card .value { font-size: 1.8em; font-weight: bold; }\n    table { width: 100%; border-collapse: collapse; margin-top: 20px; }\n    th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #eee; }\n    th { background: #f8f9fa; font-weight: 600; }\n    .footer { margin-top: 30px; color: #999; font-size: 0.85em; text-align: center; }\n  </style>\n</head>\n<body>\n  <div class=\"container\">\n    <h1>Security Scan Report</h1>\n    <p><strong>Target:</strong> ${data.hostname} (${data.ip_address})</p>\n    <p><strong>Client ID:</strong> ${data.client_id}</p>\n    <p><strong>Scan ID:</strong> ${prepared.scan_result_id}</p>\n    <p><strong>Completed:</strong> ${data.scan_completed_at}</p>\n\n    <h2>Risk Assessment</h2>\n    <p><span class=\"risk-badge\" style=\"background:${color};\">Risk Score: ${data.risk_score} / 100 (${data.risk_level.toUpperCase()})</span></p>\n\n    <div class=\"summary\">\n      <div class=\"summary-card\"><h3>Critical</h3><div class=\"value\" style=\"color:#dc3545;\">${data.severity_counts.critical}</div></div>\n      <div class=\"summary-card\"><h3>High</h3><div class=\"value\" style=\"color:#fd7e14;\">${data.severity_counts.high}</div></div>\n      <div class=\"summary-card\"><h3>Medium</h3><div class=\"value\" style=\"color:#ffc107;\">${data.severity_counts.medium}</div></div>\n      <div class=\"summary-card\"><h3>Low</h3><div class=\"value\" style=\"color:#28a745;\">${data.severity_counts.low}</div></div>\n      <div class=\"summary-card\"><h3>Info</h3><div class=\"value\" style=\"color:#6c757d;\">${data.severity_counts.info}</div></div>\n    </div>\n\n    <h2>Findings (${data.total_findings})</h2>\n    <table>\n      <thead><tr><th>Source</th><th>Type</th><th>Detail</th><th>Severity</th></tr></thead>\n      <tbody>${findingsRows || '<tr><td colspan=\"4\">No findings detected.</td></tr>'}</tbody>\n    </table>\n\n    <div class=\"footer\">\n      <p>Generated by SecureWatch Agent 1 - Security Scanner</p>\n    </div>\n  </div>\n</body>\n</html>\n`;\n\nreturn [{\n  json: {\n    html_report: html,\n    scan_result_id: prepared.scan_result_id,\n    client_id: data.client_id,\n    hostname: data.hostname,\n    risk_score: data.risk_score,\n    risk_level: data.risk_level,\n    total_findings: data.total_findings,\n    severity_counts: data.severity_counts\n  }\n}];\n"
+      },
+      "id": "node-html-report",
+      "name": "Generate HTML Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3380, 600]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-risk",
+              "leftValue": "={{ $json.risk_score }}",
+              "rightValue": 70,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-if-alerts",
+      "name": "Check If Alerts Needed",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3620, 600]
+    },
+    {
+      "parameters": {
+        "channel": "#security-alerts",
+        "text": "=:rotating_light: *Security Alert - High Risk Detected*\n\n*Target:* {{ $json.hostname }}\n*Risk Score:* {{ $json.risk_score }}/100 ({{ $json.risk_level }})\n*Total Findings:* {{ $json.total_findings }}\n*Critical:* {{ $json.severity_counts.critical }} | *High:* {{ $json.severity_counts.high }}\n*Scan ID:* {{ $json.scan_result_id }}\n\nPlease review the full report immediately.",
+        "otherOptions": {}
+      },
+      "id": "node-slack",
+      "name": "Send Slack Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [3860, 460],
+      "credentials": {
+        "slackApi": {
+          "id": "",
+          "name": "Slack Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "securewatch@example.com",
+        "toEmail": "=security-team@example.com",
+        "subject": "=[ALERT] Security Scan - Risk Score {{ $json.risk_score }} - {{ $json.hostname }}",
+        "emailType": "html",
+        "html": "={{ $json.html_report }}",
+        "options": {}
+      },
+      "id": "node-email",
+      "name": "Send Email Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [3860, 660],
+      "credentials": {
+        "smtp": {
+          "id": "",
+          "name": "SMTP Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"completed\",\n  \"scan_result_id\": \"{{ $('Prepare Scan Results').first().json.scan_result_id }}\",\n  \"client_id\": \"{{ $('Aggregate Scan Results').first().json.client_id }}\",\n  \"hostname\": \"{{ $('Aggregate Scan Results').first().json.hostname }}\",\n  \"risk_score\": {{ $('Aggregate Scan Results').first().json.risk_score }},\n  \"risk_level\": \"{{ $('Aggregate Scan Results').first().json.risk_level }}\",\n  \"total_findings\": {{ $('Aggregate Scan Results').first().json.total_findings }},\n  \"scan_completed_at\": \"{{ $('Aggregate Scan Results').first().json.scan_completed_at }}\"\n}",
+        "options": {}
+      },
+      "id": "node-respond",
+      "name": "Final Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [4100, 600]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Scan Targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Scan Targets": {
+      "main": [
+        [
+          {
+            "node": "Permission Validator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Permission Validator": {
+      "main": [
+        [
+          {
+            "node": "Shodan Host Lookup",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "SSL Labs Initiate",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "SecurityTrails DNS Lookup",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "URLScan Submit",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "VirusTotal Domain Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shodan Host Lookup": {
+      "main": [
+        [
+          {
+            "node": "Parse Shodan Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Shodan Results": {
+      "main": [
+        [
+          {
+            "node": "Merge All Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SSL Labs Initiate": {
+      "main": [
+        [
+          {
+            "node": "Wait for SSL Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for SSL Analysis": {
+      "main": [
+        [
+          {
+            "node": "Get SSL Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get SSL Results": {
+      "main": [
+        [
+          {
+            "node": "Merge All Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "SecurityTrails DNS Lookup": {
+      "main": [
+        [
+          {
+            "node": "Merge All Results",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "URLScan Submit": {
+      "main": [
+        [
+          {
+            "node": "Wait for URLScan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for URLScan": {
+      "main": [
+        [
+          {
+            "node": "Get URLScan Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get URLScan Results": {
+      "main": [
+        [
+          {
+            "node": "Merge All Results",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "VirusTotal Domain Report": {
+      "main": [
+        [
+          {
+            "node": "Merge All Results",
+            "type": "main",
+            "index": 4
+          }
+        ]
+      ]
+    },
+    "Merge All Results": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Scan Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Scan Results": {
+      "main": [
+        [
+          {
+            "node": "Prepare Scan Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Scan Results": {
+      "main": [
+        [
+          {
+            "node": "Store Results in Airtable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Results in Airtable": {
+      "main": [
+        [
+          {
+            "node": "Split Findings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Findings": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Findings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Findings": {
+      "main": [
+        [
+          {
+            "node": "Generate HTML Report",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Store Detailed Findings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Detailed Findings": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Findings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate HTML Report": {
+      "main": [
+        [
+          {
+            "node": "Check If Alerts Needed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Alerts Needed": {
+      "main": [
+        [
+          {
+            "node": "Send Slack Alert",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Email Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Slack Alert": {
+      "main": [
+        [
+          {
+            "node": "Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email Alert": {
+      "main": [
+        [
+          {
+            "node": "Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "SecureWatch",
+      "id": "tag-securewatch"
+    },
+    {
+      "name": "Security Scanner",
+      "id": "tag-security-scanner"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-01-28T00:00:00.000Z",
+  "versionId": "1"
+}
