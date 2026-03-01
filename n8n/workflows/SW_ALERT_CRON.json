@@ -1,0 +1,205 @@
+{
+  "name": "SW_ALERT_CRON — Error Log Monitor",
+  "meta": {
+    "description": "Cron-based workflow that queries sw_event_log for recent errors and sends alerts via Slack and/or email. Runs every 15 minutes by default.",
+    "version": "1.0.0"
+  },
+  "nodes": [
+    {
+      "id": "node-schedule",
+      "name": "Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 400],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "notes": "Runs every 15 minutes. Adjust interval in n8n UI as needed."
+    },
+    {
+      "id": "node-query-errors",
+      "name": "Query Recent Errors",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 400],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/rpc/sw_event_log_errors_since",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "apikey",
+              "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"minutes\": {{ $env.ALERT_WINDOW_MINUTES || '15' }}\n}",
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "notes": "Calls sw_event_log_errors_since(minutes) RPC. Returns array of error events."
+    },
+    {
+      "id": "node-check-errors-found",
+      "name": "Any Errors?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 400],
+      "parameters": {
+        "conditions": {
+          "options": {},
+          "conditions": [
+            {
+              "id": "has-errors",
+              "leftValue": "={{ Array.isArray($json.body) ? $json.body.length : 0 }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "node-no-errors",
+      "name": "No Errors — Done",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [920, 540],
+      "parameters": {},
+      "notes": "No errors in the alert window. Nothing to do."
+    },
+    {
+      "id": "node-build-alert",
+      "name": "Build Alert Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 300],
+      "parameters": {
+        "jsCode": "// Build a compact alert summary from the error rows.\n// Input: { body: [ ...error rows ] } from the HTTP response.\nconst rows = $input.first().json.body || [];\n\nconst window = $env.ALERT_WINDOW_MINUTES || '15';\nconst count  = rows.length;\n\n// Build per-error compact lines\nconst lines = rows.slice(0, 20).map(row => {\n  const errMsg = (row.err?.message || JSON.stringify(row.err || {})).slice(0, 120);\n  const ts     = row.created_at ? new Date(row.created_at).toISOString() : 'unknown';\n  return [\n    `• [${ts}]`,\n    `  trace_id:   ${row.trace_id || 'n/a'}`,\n    `  scan_id:    ${row.scan_id   || 'n/a'}`,\n    `  event:      ${row.event_name || row.event_type || 'n/a'}`,\n    `  source:     ${row.source || 'n/a'}`,\n    `  error:      ${errMsg}`,\n  ].join('\\n');\n}).join('\\n\\n');\n\nconst overflow = count > 20 ? `\\n...and ${count - 20} more errors.` : '';\n\nconst text = [\n  `🚨 *SecureWatch Alert* — ${count} error(s) in the last ${window} minutes`,\n  '',\n  lines,\n  overflow,\n].join('\\n');\n\nreturn [{\n  json: {\n    alert_text:   text,\n    error_count:  count,\n    window_min:   parseInt(window),\n    first_trace:  rows[0]?.trace_id || null,\n    errors:       rows,\n  }\n}];\n"
+      }
+    },
+    {
+      "id": "node-send-slack",
+      "name": "Send Slack Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1160, 200],
+      "parameters": {
+        "operation": "post",
+        "channel": {
+          "__rl": true,
+          "mode": "name",
+          "value": "#securewatch-alerts"
+        },
+        "text": "={{ $json.alert_text }}",
+        "otherOptions": {}
+      },
+      "credentials": {
+        "slackApi": {
+          "id": "",
+          "name": "Slack Bot Token"
+        }
+      },
+      "notes": "Configure the Slack credential and channel in n8n. Optional — disable if not using Slack."
+    },
+    {
+      "id": "node-send-email",
+      "name": "Send Email Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1160, 400],
+      "parameters": {
+        "fromEmail": "securewatch-alerts@yourcompany.com",
+        "toEmail": "={{ $env.ALERT_EMAIL_TO || 'security-team@yourcompany.com' }}",
+        "subject": "=[SecureWatch] {{ $json.error_count }} error(s) in the last {{ $json.window_min }} minutes",
+        "emailType": "text",
+        "message": "={{ $json.alert_text }}"
+      },
+      "credentials": {
+        "smtp": {
+          "id": "",
+          "name": "SMTP Account"
+        }
+      },
+      "notes": "Configure SMTP credential in n8n. Optional — disable if not using email alerts."
+    },
+    {
+      "id": "node-alert-done",
+      "name": "Alert Sent — Done",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1400, 300],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Every 15 Minutes": {
+      "main": [
+        [{ "node": "Query Recent Errors", "type": "main", "index": 0 }]
+      ]
+    },
+    "Query Recent Errors": {
+      "main": [
+        [{ "node": "Any Errors?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Any Errors?": {
+      "main": [
+        [{ "node": "Build Alert Summary", "type": "main", "index": 0 }],
+        [{ "node": "No Errors — Done", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Alert Summary": {
+      "main": [
+        [
+          { "node": "Send Slack Alert", "type": "main", "index": 0 },
+          { "node": "Send Email Alert", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Send Slack Alert": {
+      "main": [
+        [{ "node": "Alert Sent — Done", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send Email Alert": {
+      "main": [
+        [{ "node": "Alert Sent — Done", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "errorWorkflow": ""
+  }
+}

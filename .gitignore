@@ -27,3 +27,15 @@ tests/e2e/test-config.env
 # Test output
 coverage/
 .nyc_output/
+
+# Python
+__pycache__/
+*.py[cod]
+debug/.venv/
+debug/.env
+.pytest_cache/
+*.egg-info/
+
+# Supabase local dev
+supabase/.branches/
+supabase/.temp/

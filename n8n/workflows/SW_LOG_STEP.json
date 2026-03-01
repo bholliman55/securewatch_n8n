@@ -1,0 +1,145 @@
+{
+  "name": "SW_LOG_STEP — Trace Event Logger",
+  "meta": {
+    "description": "Reusable sub-workflow that logs a structured trace event to the sw-log Supabase Edge Function. Call this from any SecureWatch workflow at each lifecycle stage.",
+    "version": "1.0.0"
+  },
+  "nodes": [
+    {
+      "id": "node-execute-workflow-trigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [200, 400],
+      "parameters": {},
+      "notes": "Entry point when called via 'Execute Workflow' node from a parent workflow. Input schema documented below."
+    },
+    {
+      "id": "node-validate-input",
+      "name": "Validate and Build Log Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 400],
+      "parameters": {
+        "jsCode": "// SW_LOG_STEP — Input Validator and Payload Builder\n//\n// Expected input from parent workflow (via Execute Workflow node):\n// {\n//   trace_id:    string  (UUID)   REQUIRED\n//   source:      string           REQUIRED  e.g. 'n8n:agent-1'\n//   event_type:  string           REQUIRED  e.g. 'workflow.start'\n//   scan_id:     string           optional\n//   client_id:   string           optional\n//   event_name:  string           optional\n//   status:      'info'|'ok'|'error'  optional (default: 'info')\n//   req:         object           optional  request payload snapshot\n//   res:         object           optional  response payload snapshot\n//   err:         object           optional  {message, code, stack}\n//   meta:        object           optional  {fixture_mode: bool, ...}\n//   duration_ms: number           optional\n// }\n\nconst input = $input.first().json;\nconst REQUIRED = ['trace_id', 'source', 'event_type'];\nconst UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\n\n// Validate required fields\nfor (const field of REQUIRED) {\n  if (!input[field] || typeof input[field] !== 'string' || !input[field].trim()) {\n    throw new Error(`SW_LOG_STEP: Missing required field '${field}'.`);\n  }\n}\n\nif (!UUID_RE.test(input.trace_id)) {\n  throw new Error(`SW_LOG_STEP: trace_id '${input.trace_id}' is not a valid UUID.`);\n}\n\nconst VALID_STATUSES = ['info', 'ok', 'error'];\nconst status = VALID_STATUSES.includes(input.status) ? input.status : 'info';\n\n// Build clean payload for sw-log\nconst payload = {\n  trace_id:    input.trace_id.toLowerCase(),\n  source:      input.source.trim(),\n  event_type:  input.event_type.trim(),\n  status,\n};\n\nif (input.scan_id)     payload.scan_id     = input.scan_id;\nif (input.client_id)   payload.client_id   = input.client_id;\nif (input.event_name)  payload.event_name  = input.event_name;\nif (input.req)         payload.req         = input.req;\nif (input.res)         payload.res         = input.res;\nif (input.err)         payload.err         = input.err;\nif (input.meta)        payload.meta        = input.meta;\nif (typeof input.duration_ms === 'number') {\n  payload.duration_ms = Math.round(input.duration_ms);\n}\n\nreturn [{ json: payload }];\n"
+      }
+    },
+    {
+      "id": "node-call-sw-log",
+      "name": "POST to sw-log Edge Function",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 400],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/functions/v1/sw-log",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 10000,
+          "allowUnauthorizedCerts": false,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "notes": "Calls sw-log with the validated payload. Authorization header uses SUPABASE_SERVICE_ROLE_KEY env var set in n8n."
+    },
+    {
+      "id": "node-check-response",
+      "name": "Check Log Response",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [920, 400],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "status-check",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 201,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "node-log-success",
+      "name": "Return Log ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1160, 300],
+      "parameters": {
+        "jsCode": "// Success path — return the inserted event id to the caller\nconst body = $input.first().json.body || $input.first().json;\nreturn [{ json: { ok: true, event_id: body.id } }];\n"
+      }
+    },
+    {
+      "id": "node-log-failure",
+      "name": "Handle Log Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1160, 500],
+      "parameters": {
+        "jsCode": "// Failure path — log a warning but do NOT throw (logging failures should\n// not abort the parent workflow). Return a degraded result.\nconst resp = $input.first().json;\nconsole.warn('[SW_LOG_STEP] sw-log call failed:', JSON.stringify(resp).slice(0, 500));\nreturn [{ json: { ok: false, event_id: null, error: resp.body || resp } }];\n"
+      }
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [{ "node": "Validate and Build Log Payload", "type": "main", "index": 0 }]
+      ]
+    },
+    "Validate and Build Log Payload": {
+      "main": [
+        [{ "node": "POST to sw-log Edge Function", "type": "main", "index": 0 }]
+      ]
+    },
+    "POST to sw-log Edge Function": {
+      "main": [
+        [{ "node": "Check Log Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "Check Log Response": {
+      "main": [
+        [{ "node": "Return Log ID", "type": "main", "index": 0 }],
+        [{ "node": "Handle Log Error", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": false,
+    "callerPolicy": "workflowsFromSameOwner"
+  }
+}
