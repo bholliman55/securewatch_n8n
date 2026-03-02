@@ -13,18 +13,24 @@
       "name": "Webhook Trigger",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [200, 600],
+      "position": [
+        200,
+        600
+      ],
       "webhookId": "security-scanner-start"
     },
     {
       "parameters": {
-        "jsCode": "// Generate trace_id for this workflow execution.\n// Adds trace_id and top-level client_id while preserving the full webhook output\n// so all downstream nodes that reference $json.body.* continue to work.\nconst webhookOutput = $input.first().json;\nconst body = webhookOutput.body || {};\n\nfunction uuidv4() {\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {\n    const r = Math.random() * 16 | 0;\n    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);\n  });\n}\n\nreturn [{ json: { ...webhookOutput, trace_id: uuidv4(), client_id: body.client_id || '' } }];"
+        "jsCode": "// Generate trace_id for this workflow execution.\n// crypto.randomUUID() is available in n8n's Node.js runtime.\n// Accepts a caller-supplied trace_id so replay scenarios stay correlated.\n// Spreads the full webhook output so $json.body.* references downstream\n// continue to work without modification.\nconst { randomUUID } = require('crypto');\nconst webhookOutput = $input.first().json;\nconst body = webhookOutput.body || {};\n\nreturn [{ json: {\n  ...webhookOutput,\n  trace_id:     body.trace_id     || randomUUID(),\n  scan_id:      body.scan_id      || null,\n  client_id:    body.client_id    || null,\n  fixture_mode: body.fixture_mode === true,\n  _started_at:  Date.now(),\n} }];"
       },
       "id": "a1-generate-trace-id",
-      "name": "Generate Trace ID",
+      "name": "Generate trace_id",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [380, 600]
+      "position": [
+        380,
+        600
+      ]
     },
     {
       "parameters": {
@@ -35,13 +41,34 @@
         },
         "workflowInputs": {
           "values": [
-            { "name": "trace_id",   "stringValue": "={{ $json.trace_id }}" },
-            { "name": "source",     "stringValue": "n8n:agent-1" },
-            { "name": "event_type", "stringValue": "workflow.start" },
-            { "name": "client_id",  "stringValue": "={{ $json.client_id || '' }}" },
-            { "name": "event_name", "stringValue": "Security Scanner started" },
-            { "name": "status",     "stringValue": "info" },
-            { "name": "req",        "stringValue": "={{ JSON.stringify({ client_id: $json.client_id, body: $json.body }) }}" }
+            {
+              "name": "trace_id",
+              "stringValue": "={{ $json.trace_id }}"
+            },
+            {
+              "name": "source",
+              "stringValue": "n8n:agent-1"
+            },
+            {
+              "name": "event_type",
+              "stringValue": "workflow.start"
+            },
+            {
+              "name": "client_id",
+              "stringValue": "={{ $json.client_id || '' }}"
+            },
+            {
+              "name": "event_name",
+              "stringValue": "Security Scanner started"
+            },
+            {
+              "name": "status",
+              "stringValue": "info"
+            },
+            {
+              "name": "req",
+              "stringValue": "={{ JSON.stringify({ client_id: $json.client_id, body: $json.body }) }}"
+            }
           ]
         },
         "options": {}
@@ -50,8 +77,11 @@
       "name": "Log: workflow.start",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [380, 820],
-      "notes": "Side-branch: fires SW_LOG_STEP but does NOT intercept the main data flow. Replace SW_LOG_STEP_WORKFLOW_ID with the actual n8n workflow ID of SW_LOG_STEP — Trace Event Logger."
+      "position": [
+        380,
+        820
+      ],
+      "notes": "Side-branch: fires SW_LOG_STEP but does NOT intercept the main data flow. Replace SW_LOG_STEP_WORKFLOW_ID with the actual n8n workflow ID of SW_LOG_STEP \u2014 Trace Event Logger."
     },
     {
       "parameters": {
@@ -73,7 +103,10 @@
       "name": "Get Scan Targets",
       "type": "n8n-nodes-base.airtable",
       "typeVersion": 2.1,
-      "position": [580, 600],
+      "position": [
+        580,
+        600
+      ],
       "credentials": {
         "airtableTokenApi": {
           "id": "",
@@ -90,7 +123,10 @@
       "name": "Permission Validator",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [820, 600]
+      "position": [
+        820,
+        600
+      ]
     },
     {
       "parameters": {
@@ -114,7 +150,10 @@
       "name": "Shodan Host Lookup",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1100, 200]
+      "position": [
+        1100,
+        200
+      ]
     },
     {
       "parameters": {
@@ -124,7 +163,10 @@
       "name": "Parse Shodan Results",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1340, 200]
+      "position": [
+        1340,
+        200
+      ]
     },
     {
       "parameters": {
@@ -138,7 +180,10 @@
       "name": "SSL Labs Initiate",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1100, 400]
+      "position": [
+        1100,
+        400
+      ]
     },
     {
       "parameters": {
@@ -149,7 +194,10 @@
       "name": "Wait for SSL Analysis",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
-      "position": [1340, 400]
+      "position": [
+        1340,
+        400
+      ]
     },
     {
       "parameters": {
@@ -163,7 +211,10 @@
       "name": "Get SSL Results",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1580, 400]
+      "position": [
+        1580,
+        400
+      ]
     },
     {
       "parameters": {
@@ -186,7 +237,10 @@
       "name": "SecurityTrails DNS Lookup",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1100, 600]
+      "position": [
+        1100,
+        600
+      ]
     },
     {
       "parameters": {
@@ -226,7 +280,10 @@
       "name": "URLScan Submit",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1100, 800]
+      "position": [
+        1100,
+        800
+      ]
     },
     {
       "parameters": {
@@ -237,7 +294,10 @@
       "name": "Wait for URLScan",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
-      "position": [1340, 800]
+      "position": [
+        1340,
+        800
+      ]
     },
     {
       "parameters": {
@@ -251,7 +311,10 @@
       "name": "Get URLScan Results",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1580, 800]
+      "position": [
+        1580,
+        800
+      ]
     },
     {
       "parameters": {
@@ -274,7 +337,10 @@
       "name": "VirusTotal Domain Report",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1100, 1000]
+      "position": [
+        1100,
+        1000
+      ]
     },
     {
       "parameters": {
@@ -286,7 +352,10 @@
       "name": "Merge All Results",
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3,
-      "position": [1840, 600]
+      "position": [
+        1840,
+        600
+      ]
     },
     {
       "parameters": {
@@ -296,7 +365,10 @@
       "name": "Aggregate Scan Results",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2080, 600]
+      "position": [
+        2080,
+        600
+      ]
     },
     {
       "parameters": {
@@ -307,13 +379,34 @@
         },
         "workflowInputs": {
           "values": [
-            { "name": "trace_id",   "stringValue": "={{ $('Generate Trace ID').first().json.trace_id }}" },
-            { "name": "source",     "stringValue": "n8n:agent-1" },
-            { "name": "event_type", "stringValue": "workflow.step" },
-            { "name": "client_id",  "stringValue": "={{ $json.client_id || '' }}" },
-            { "name": "event_name", "stringValue": "All scanners aggregated" },
-            { "name": "status",     "stringValue": "ok" },
-            { "name": "res",        "stringValue": "={{ JSON.stringify({ risk_score: $json.risk_score, risk_level: $json.risk_level, total_findings: $json.total_findings, severity_counts: $json.severity_counts, hostname: $json.hostname }) }}" }
+            {
+              "name": "trace_id",
+              "stringValue": "={{ $('Generate trace_id').first().json.trace_id }}"
+            },
+            {
+              "name": "source",
+              "stringValue": "n8n:agent-1"
+            },
+            {
+              "name": "event_type",
+              "stringValue": "workflow.step"
+            },
+            {
+              "name": "client_id",
+              "stringValue": "={{ $json.client_id || '' }}"
+            },
+            {
+              "name": "event_name",
+              "stringValue": "All scanners aggregated"
+            },
+            {
+              "name": "status",
+              "stringValue": "ok"
+            },
+            {
+              "name": "res",
+              "stringValue": "={{ JSON.stringify({ risk_score: $json.risk_score, risk_level: $json.risk_level, total_findings: $json.total_findings, severity_counts: $json.severity_counts, hostname: $json.hostname }) }}"
+            }
           ]
         },
         "options": {}
@@ -322,7 +415,10 @@
       "name": "Log: scan.aggregated",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [2080, 820],
+      "position": [
+        2080,
+        820
+      ],
       "notes": "Side-branch off Aggregate Scan Results. Does not affect main data flow."
     },
     {
@@ -333,7 +429,10 @@
       "name": "Prepare Scan Results",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2320, 600]
+      "position": [
+        2320,
+        600
+      ]
     },
     {
       "parameters": {
@@ -374,7 +473,10 @@
       "name": "Store Results in Airtable",
       "type": "n8n-nodes-base.airtable",
       "typeVersion": 2.1,
-      "position": [2560, 600],
+      "position": [
+        2560,
+        600
+      ],
       "credentials": {
         "airtableTokenApi": {
           "id": "",
@@ -391,7 +493,10 @@
       "name": "Split Findings",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2800, 600]
+      "position": [
+        2800,
+        600
+      ]
     },
     {
       "parameters": {
@@ -401,7 +506,10 @@
       "name": "Loop Over Findings",
       "type": "n8n-nodes-base.splitInBatches",
       "typeVersion": 3,
-      "position": [3040, 600]
+      "position": [
+        3040,
+        600
+      ]
     },
     {
       "parameters": {
@@ -436,7 +544,10 @@
       "name": "Store Detailed Findings",
       "type": "n8n-nodes-base.airtable",
       "typeVersion": 2.1,
-      "position": [3280, 600],
+      "position": [
+        3280,
+        600
+      ],
       "credentials": {
         "airtableTokenApi": {
           "id": "",
@@ -453,7 +564,10 @@
       "name": "Generate HTML Report",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [3520, 600]
+      "position": [
+        3520,
+        600
+      ]
     },
     {
       "parameters": {
@@ -464,13 +578,38 @@
         },
         "workflowInputs": {
           "values": [
-            { "name": "trace_id",   "stringValue": "={{ $('Generate Trace ID').first().json.trace_id }}" },
-            { "name": "source",     "stringValue": "n8n:agent-1" },
-            { "name": "event_type", "stringValue": "workflow.complete" },
-            { "name": "client_id",  "stringValue": "={{ $json.client_id || '' }}" },
-            { "name": "event_name", "stringValue": "Security Scanner complete" },
-            { "name": "status",     "stringValue": "ok" },
-            { "name": "res",        "stringValue": "={{ JSON.stringify({ scan_result_id: $json.scan_result_id, risk_score: $json.risk_score, risk_level: $json.risk_level, total_findings: $json.total_findings, severity_counts: $json.severity_counts }) }}" }
+            {
+              "name": "trace_id",
+              "stringValue": "={{ $('Generate trace_id').first().json.trace_id }}"
+            },
+            {
+              "name": "source",
+              "stringValue": "n8n:agent-1"
+            },
+            {
+              "name": "event_type",
+              "stringValue": "workflow.complete"
+            },
+            {
+              "name": "client_id",
+              "stringValue": "={{ $json.client_id || '' }}"
+            },
+            {
+              "name": "event_name",
+              "stringValue": "Security Scanner complete"
+            },
+            {
+              "name": "status",
+              "stringValue": "ok"
+            },
+            {
+              "name": "res",
+              "stringValue": "={{ JSON.stringify({ scan_result_id: $json.scan_result_id, risk_score: $json.risk_score, risk_level: $json.risk_level, total_findings: $json.total_findings, severity_counts: $json.severity_counts }) }}"
+            },
+            {
+              "name": "duration_ms",
+              "stringValue": "={{ Date.now() - $('Generate trace_id').first().json._started_at }}"
+            }
           ]
         },
         "options": {}
@@ -479,7 +618,10 @@
       "name": "Log: workflow.complete",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [3520, 820],
+      "position": [
+        3520,
+        820
+      ],
       "notes": "Side-branch off Generate HTML Report. Does not affect main data flow."
     },
     {
@@ -509,7 +651,10 @@
       "name": "Check If Alerts Needed",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [3760, 600]
+      "position": [
+        3760,
+        600
+      ]
     },
     {
       "parameters": {
@@ -521,7 +666,10 @@
       "name": "Send Slack Alert",
       "type": "n8n-nodes-base.slack",
       "typeVersion": 2.2,
-      "position": [4000, 460],
+      "position": [
+        4000,
+        460
+      ],
       "credentials": {
         "slackApi": {
           "id": "",
@@ -542,7 +690,10 @@
       "name": "Send Email Alert",
       "type": "n8n-nodes-base.emailSend",
       "typeVersion": 2.1,
-      "position": [4000, 660],
+      "position": [
+        4000,
+        660
+      ],
       "credentials": {
         "smtp": {
           "id": "",
@@ -560,22 +711,37 @@
       "name": "Final Response",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [4240, 600]
+      "position": [
+        4240,
+        600
+      ]
     }
   ],
   "connections": {
     "Webhook Trigger": {
       "main": [
         [
-          { "node": "Generate Trace ID", "type": "main", "index": 0 }
+          {
+            "node": "Generate Trace ID",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
     "Generate Trace ID": {
       "main": [
         [
-          { "node": "Get Scan Targets", "type": "main", "index": 0 },
-          { "node": "Log: workflow.start", "type": "main", "index": 0 }
+          {
+            "node": "Get Scan Targets",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log: workflow.start",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
@@ -745,8 +911,16 @@
     "Aggregate Scan Results": {
       "main": [
         [
-          { "node": "Prepare Scan Results", "type": "main", "index": 0 },
-          { "node": "Log: scan.aggregated", "type": "main", "index": 0 }
+          {
+            "node": "Prepare Scan Results",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log: scan.aggregated",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
@@ -815,8 +989,16 @@
     "Generate HTML Report": {
       "main": [
         [
-          { "node": "Check If Alerts Needed", "type": "main", "index": 0 },
-          { "node": "Log: workflow.complete", "type": "main", "index": 0 }
+          {
+            "node": "Check If Alerts Needed",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log: workflow.complete",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
