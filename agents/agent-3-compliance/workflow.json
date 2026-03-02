@@ -19,6 +19,43 @@
     },
     {
       "parameters": {
+        "jsCode": "// Generate trace_id for this workflow execution.\n// Adds trace_id and top-level client_id while preserving the full webhook output\n// so all downstream nodes that reference $json.body.* continue to work.\nconst webhookOutput = $input.first().json;\nconst body = webhookOutput.body || {};\n\nfunction uuidv4() {\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {\n    const r = Math.random() * 16 | 0;\n    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);\n  });\n}\n\nreturn [{ json: { ...webhookOutput, trace_id: uuidv4(), client_id: body.client_id || '' } }];"
+      },
+      "id": "a3-generate-trace-id",
+      "name": "Generate Trace ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [380, 400]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "SW_LOG_STEP_WORKFLOW_ID",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "values": [
+            { "name": "trace_id",   "stringValue": "={{ $json.trace_id }}" },
+            { "name": "source",     "stringValue": "n8n:agent-3" },
+            { "name": "event_type", "stringValue": "workflow.start" },
+            { "name": "client_id",  "stringValue": "={{ $json.client_id || '' }}" },
+            { "name": "event_name", "stringValue": "Compliance check started" },
+            { "name": "status",     "stringValue": "info" },
+            { "name": "req",        "stringValue": "={{ JSON.stringify({ client_id: $json.client_id, framework: $json.body.framework || 'auto-detect', file_count: ($json.body.policy_files || []).length }) }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a3-log-workflow-start",
+      "name": "Log: workflow.start",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [380, 620],
+      "notes": "Side-branch off Generate Trace ID. Does not intercept the main data flow. Replace SW_LOG_STEP_WORKFLOW_ID with the actual n8n workflow ID of SW_LOG_STEP — Trace Event Logger."
+    },
+    {
+      "parameters": {
         "rules": {
           "rules": [
             {
@@ -45,7 +82,7 @@
       "name": "Check File Type",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3,
-      "position": [440, 400]
+      "position": [580, 400]
     },
     {
       "parameters": {
@@ -73,7 +110,7 @@
       "name": "Extract Text via PDF.co",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [700, 240]
+      "position": [840, 240]
     },
     {
       "parameters": {
@@ -83,7 +120,7 @@
       "name": "Extract DOCX Text",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [700, 420]
+      "position": [840, 420]
     },
     {
       "parameters": {
@@ -93,7 +130,7 @@
       "name": "Extract Plain Text",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [700, 600]
+      "position": [840, 600]
     },
     {
       "parameters": {
@@ -103,7 +140,7 @@
       "name": "Normalize Extracted Text",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [960, 400]
+      "position": [1100, 400]
     },
     {
       "parameters": {
@@ -135,7 +172,7 @@
       "name": "Analyze Policy with Claude",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1200, 400]
+      "position": [1340, 400]
     },
     {
       "parameters": {
@@ -145,7 +182,34 @@
       "name": "Parse Policy Analysis",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1440, 400]
+      "position": [1580, 400]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "SW_LOG_STEP_WORKFLOW_ID",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "values": [
+            { "name": "trace_id",   "stringValue": "={{ $('Generate Trace ID').first().json.trace_id }}" },
+            { "name": "source",     "stringValue": "n8n:agent-3" },
+            { "name": "event_type", "stringValue": "tool.result" },
+            { "name": "client_id",  "stringValue": "={{ $json.clientId || $('Generate Trace ID').first().json.client_id || '' }}" },
+            { "name": "event_name", "stringValue": "Policy document analysed" },
+            { "name": "status",     "stringValue": "ok" },
+            { "name": "res",        "stringValue": "={{ JSON.stringify({ framework: $json.analysis.framework, policy_title: $json.analysis.policy_title, completeness_score: $json.analysis.completeness_score, risk_level: $json.analysis.risk_level, gap_count: ($json.analysis.gaps || []).length }) }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a3-log-policy-analyzed",
+      "name": "Log: policy.analyzed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [1580, 620],
+      "notes": "Side-branch off Parse Policy Analysis. Does not affect main data flow."
     },
     {
       "parameters": {
@@ -173,7 +237,7 @@
       "name": "Store Policy in Airtable",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1680, 400]
+      "position": [1820, 400]
     },
     {
       "parameters": {
@@ -194,7 +258,7 @@
       "name": "Get Compliance Requirements",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1920, 400]
+      "position": [2060, 400]
     },
     {
       "parameters": {
@@ -204,7 +268,7 @@
       "name": "Prepare Mapping Data",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2160, 400]
+      "position": [2300, 400]
     },
     {
       "parameters": {
@@ -236,7 +300,7 @@
       "name": "Map Policies to Requirements",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [2400, 400]
+      "position": [2540, 400]
     },
     {
       "parameters": {
@@ -246,7 +310,7 @@
       "name": "Parse Compliance Mappings",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2640, 400]
+      "position": [2780, 400]
     },
     {
       "parameters": {
@@ -257,7 +321,7 @@
       "name": "Loop Over Mappings",
       "type": "n8n-nodes-base.splitInBatches",
       "typeVersion": 3,
-      "position": [2880, 400]
+      "position": [3020, 400]
     },
     {
       "parameters": {
@@ -285,7 +349,7 @@
       "name": "Update Compliance Status",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [3120, 400]
+      "position": [3260, 400]
     },
     {
       "parameters": {
@@ -295,7 +359,7 @@
       "name": "Filter Non-Compliant Requirements",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [3360, 400]
+      "position": [3500, 400]
     },
     {
       "parameters": {
@@ -306,7 +370,7 @@
       "name": "Loop Over Gaps",
       "type": "n8n-nodes-base.splitInBatches",
       "typeVersion": 3,
-      "position": [3600, 400]
+      "position": [3740, 400]
     },
     {
       "parameters": {
@@ -338,7 +402,7 @@
       "name": "Generate Missing Policy",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [3840, 400]
+      "position": [3980, 400]
     },
     {
       "parameters": {
@@ -366,7 +430,7 @@
       "name": "Store Generated Policy",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [4080, 400]
+      "position": [4220, 400]
     },
     {
       "parameters": {
@@ -398,7 +462,7 @@
       "name": "Map to Technical Controls",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [4400, 400]
+      "position": [4540, 400]
     },
     {
       "parameters": {
@@ -408,7 +472,7 @@
       "name": "Parse Technical Controls",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [4640, 400]
+      "position": [4780, 400]
     },
     {
       "parameters": {
@@ -440,7 +504,7 @@
       "name": "Generate Azure Policy JSON",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [4880, 400]
+      "position": [5020, 400]
     },
     {
       "parameters": {
@@ -450,7 +514,34 @@
       "name": "Validate Azure Policy JSON",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [5120, 400]
+      "position": [5260, 400]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "SW_LOG_STEP_WORKFLOW_ID",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "values": [
+            { "name": "trace_id",   "stringValue": "={{ $('Generate Trace ID').first().json.trace_id }}" },
+            { "name": "source",     "stringValue": "n8n:agent-3" },
+            { "name": "event_type", "stringValue": "tool.result" },
+            { "name": "client_id",  "stringValue": "={{ $('Generate Trace ID').first().json.client_id || '' }}" },
+            { "name": "event_name", "stringValue": "Azure Policy JSON validated" },
+            { "name": "status",     "stringValue": "={{ $json.allValid ? 'ok' : 'info' }}" },
+            { "name": "res",        "stringValue": "={{ JSON.stringify({ policy_count: $json.policies.length, all_valid: $json.allValid, issues: $json.validationResults.filter(v => !v.valid).map(v => ({ name: v.name, issues: v.issues })) }) }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a3-log-azure-validated",
+      "name": "Log: azure.validated",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [5260, 620],
+      "notes": "Side-branch off Validate Azure Policy JSON. Does not affect main data flow."
     },
     {
       "parameters": {
@@ -482,7 +573,7 @@
       "name": "Generate Terraform Code",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [5360, 400]
+      "position": [5500, 400]
     },
     {
       "parameters": {
@@ -492,7 +583,7 @@
       "name": "Prepare Azure Policy Data",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [5600, 400]
+      "position": [5740, 400]
     },
     {
       "parameters": {
@@ -520,7 +611,7 @@
       "name": "Store Azure Policies",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [5840, 400]
+      "position": [5980, 400]
     },
     {
       "parameters": {
@@ -552,7 +643,7 @@
       "name": "Generate Compliance Report",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [6080, 400]
+      "position": [6220, 400]
     },
     {
       "parameters": {
@@ -562,7 +653,7 @@
       "name": "Prepare Final Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [6320, 400]
+      "position": [6460, 400]
     }
   ],
   "connections": {
@@ -570,10 +661,18 @@
       "main": [
         [
           {
-            "node": "Check File Type",
+            "node": "Generate Trace ID",
             "type": "main",
             "index": 0
           }
+        ]
+      ]
+    },
+    "Generate Trace ID": {
+      "main": [
+        [
+          { "node": "Check File Type", "type": "main", "index": 0 },
+          { "node": "Log: workflow.start", "type": "main", "index": 0 }
         ]
       ]
     },
@@ -660,11 +759,8 @@
     "Parse Policy Analysis": {
       "main": [
         [
-          {
-            "node": "Store Policy in Airtable",
-            "type": "main",
-            "index": 0
-          }
+          { "node": "Store Policy in Airtable", "type": "main", "index": 0 },
+          { "node": "Log: policy.analyzed", "type": "main", "index": 0 }
         ]
       ]
     },
@@ -839,11 +935,8 @@
     "Validate Azure Policy JSON": {
       "main": [
         [
-          {
-            "node": "Generate Terraform Code",
-            "type": "main",
-            "index": 0
-          }
+          { "node": "Generate Terraform Code", "type": "main", "index": 0 },
+          { "node": "Log: azure.validated", "type": "main", "index": 0 }
         ]
       ]
     },
@@ -907,6 +1000,6 @@
     }
   ],
   "triggerCount": 1,
-  "updatedAt": "2026-01-28T00:00:00.000Z",
-  "versionId": "1"
+  "updatedAt": "2026-03-02T00:00:00.000Z",
+  "versionId": "2"
 }
