@@ -820,14 +820,14 @@
       "main": [
         [
           {
-            "node": "Generate Trace ID",
+            "node": "Generate trace_id",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Generate Trace ID": {
+    "Generate trace_id": {
       "main": [
         [
           {
