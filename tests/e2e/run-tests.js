@@ -7,10 +7,15 @@
  * All credentials live in n8n; this only needs the webhook URLs and auth key.
  *
  * Usage:
- *   node run-tests.js              # run all agent tests
- *   node run-tests.js --agent 1    # run agent 1 only
- *   node run-tests.js --agent 2    # run agent 2 only
- *   node run-tests.js --agent 3    # run agent 3 only
+ *   node run-tests.js                              # run all agent tests
+ *   node run-tests.js --agent 1                    # run agent 1 only
+ *   node run-tests.js --agent 2                    # run agent 2 only
+ *   node run-tests.js --agent 3                    # run agent 3 only
+ *   node run-tests.js --orchestrator               # run all orchestrator tests
+ *   node run-tests.js --orchestrator-scan security_scan
+ *   node run-tests.js --orchestrator-scan vuln_assessment
+ *   node run-tests.js --orchestrator-scan compliance
+ *   node run-tests.js --orchestrator-scan full
  */
 
 const fs = require("fs");
@@ -263,6 +268,141 @@ const tests = {
 };
 
 // ---------------------------------------------------------------------------
+// Scan Orchestrator tests — hits all 3 agent webhooks via the edge function
+// ---------------------------------------------------------------------------
+
+const ORCHESTRATOR_SCAN_TYPES = [
+  "security_scan",
+  "vuln_assessment",
+  "compliance",
+  "full",
+];
+
+async function runOrchestratorTest(scanType, cfg) {
+  const url = cfg.SCAN_ORCHESTRATOR_URL;
+  if (!url) {
+    return {
+      agent: `Orchestrator (${scanType})`,
+      pass: false,
+      checks: [
+        {
+          name: "SCAN_ORCHESTRATOR_URL configured",
+          pass: false,
+          detail: "Set SCAN_ORCHESTRATOR_URL in test-config.env",
+        },
+      ],
+    };
+  }
+
+  const timeout = parseInt(cfg.TEST_TIMEOUT_MS) || 120000;
+  const headers = {
+    Authorization: `Bearer ${cfg.SUPABASE_SERVICE_ROLE_KEY || ""}`,
+  };
+
+  const payload = {
+    client_id: "CL001",
+    scan_type: scanType,
+    fixture_mode: true,
+    ...(scanType === "compliance" || scanType === "full"
+      ? { framework: "HIPAA" }
+      : {}),
+  };
+
+  console.log(`\n${"=".repeat(60)}`);
+  console.log(`Running: Scan Orchestrator — scan_type=${scanType}`);
+  console.log("=".repeat(60));
+  console.log(`  POST ${url}`);
+  console.log(`  Payload: ${JSON.stringify(payload)}`);
+
+  const checks = [];
+
+  try {
+    const res = await httpPost(url, payload, headers, timeout);
+
+    checks.push({
+      name: "HTTP status is 200 or 207",
+      pass: res.status === 200 || res.status === 207,
+      detail: `got ${res.status}`,
+    });
+
+    if (typeof res.body === "object" && res.body !== null) {
+      checks.push({
+        name: "Response has ok field",
+        pass: "ok" in res.body,
+        detail: JSON.stringify(res.body).slice(0, 300),
+      });
+
+      checks.push({
+        name: "Response has scan_id",
+        pass: "scan_id" in res.body && typeof res.body.scan_id === "string",
+        detail: `scan_id=${res.body.scan_id}`,
+      });
+
+      checks.push({
+        name: "Response has trace_id (UUID)",
+        pass:
+          "trace_id" in res.body &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+            res.body.trace_id
+          ),
+        detail: `trace_id=${res.body.trace_id}`,
+      });
+
+      const expectedAgents =
+        scanType === "full"
+          ? ["security_scan", "vuln_assessment", "compliance"]
+          : [scanType];
+
+      checks.push({
+        name: `agents_called includes expected agents: ${expectedAgents.join(", ")}`,
+        pass:
+          Array.isArray(res.body.agents_called) &&
+          expectedAgents.every((a) => res.body.agents_called.includes(a)),
+        detail: `agents_called=${JSON.stringify(res.body.agents_called)}`,
+      });
+
+      if (res.body.results) {
+        for (const agent of expectedAgents) {
+          const r = res.body.results[agent];
+          checks.push({
+            name: `Webhook reached for ${agent} (non-zero status)`,
+            pass: r !== undefined && r.status > 0,
+            detail: r
+              ? `status=${r.status} ok=${r.ok} latency=${r.latency_ms}ms`
+              : "no result",
+          });
+        }
+      }
+    } else {
+      checks.push({
+        name: "Response is JSON object",
+        pass: false,
+        detail: `got ${typeof res.body}: ${String(res.body).slice(0, 200)}`,
+      });
+    }
+  } catch (err) {
+    checks.push({
+      name: "Request succeeded",
+      pass: false,
+      detail: err.message,
+    });
+  }
+
+  const allPass = checks.every((c) => c.pass);
+  for (const check of checks) {
+    const icon = check.pass ? "PASS" : "FAIL";
+    console.log(`  [${icon}] ${check.name} — ${check.detail}`);
+  }
+  console.log(`\n  Result: ${allPass ? "ALL CHECKS PASSED" : "SOME CHECKS FAILED"}`);
+
+  return {
+    agent: `Orchestrator (${scanType})`,
+    pass: allPass,
+    checks,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
 
@@ -312,8 +452,47 @@ async function runTest(num, cfg) {
 async function main() {
   const cfg = loadConfig();
 
-  // Parse --agent flag
   const args = process.argv.slice(2);
+
+  // Parse --orchestrator-scan <scan_type> flag
+  const orchScanIdx = args.indexOf("--orchestrator-scan");
+  if (orchScanIdx !== -1 && args[orchScanIdx + 1]) {
+    const scanType = args[orchScanIdx + 1];
+    if (!ORCHESTRATOR_SCAN_TYPES.includes(scanType)) {
+      console.error(
+        `Unknown scan type: ${scanType}. Valid: ${ORCHESTRATOR_SCAN_TYPES.join(", ")}`
+      );
+      process.exit(1);
+    }
+    console.log("SecureWatch — Scan Orchestrator Test");
+    console.log(`Orchestrator URL: ${cfg.SCAN_ORCHESTRATOR_URL || "(not set)"}`);
+    const result = await runOrchestratorTest(scanType, cfg);
+    console.log(`\nTotal: 1 | Passed: ${result.pass ? 1 : 0} | Failed: ${result.pass ? 0 : 1}`);
+    process.exit(result.pass ? 0 : 1);
+  }
+
+  // Parse --orchestrator flag (run all 4 scan types)
+  if (args.includes("--orchestrator")) {
+    console.log("SecureWatch — Scan Orchestrator Tests (all scan types)");
+    console.log(`Orchestrator URL: ${cfg.SCAN_ORCHESTRATOR_URL || "(not set)"}`);
+    const results = [];
+    for (const scanType of ORCHESTRATOR_SCAN_TYPES) {
+      results.push(await runOrchestratorTest(scanType, cfg));
+    }
+    console.log(`\n${"=".repeat(60)}`);
+    console.log("SUMMARY");
+    console.log("=".repeat(60));
+    let exitCode = 0;
+    for (const r of results) {
+      const icon = r.pass ? "PASS" : "FAIL";
+      console.log(`  [${icon}] ${r.agent}`);
+      if (!r.pass) exitCode = 1;
+    }
+    console.log(`\nTotal: ${results.length} | Passed: ${results.filter((r) => r.pass).length} | Failed: ${results.filter((r) => !r.pass).length}`);
+    process.exit(exitCode);
+  }
+
+  // Parse --agent flag
   const agentIdx = args.indexOf("--agent");
   let agentsToRun = [1, 2, 3];
   if (agentIdx !== -1 && args[agentIdx + 1]) {

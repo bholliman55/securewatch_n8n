@@ -1,5 +1,6 @@
 {
   "client_id": "CL001",
   "scan_type": "full",
-  "priority": "normal"
+  "priority": "normal",
+  "fixture_mode": true
 }

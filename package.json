@@ -6,7 +6,12 @@
     "test": "node tests/e2e/run-tests.js",
     "test:agent1": "node tests/e2e/run-tests.js --agent 1",
     "test:agent2": "node tests/e2e/run-tests.js --agent 2",
-    "test:agent3": "node tests/e2e/run-tests.js --agent 3"
+    "test:agent3": "node tests/e2e/run-tests.js --agent 3",
+    "test:orchestrator": "node tests/e2e/run-tests.js --orchestrator",
+    "test:orchestrator:security": "node tests/e2e/run-tests.js --orchestrator-scan security_scan",
+    "test:orchestrator:vuln": "node tests/e2e/run-tests.js --orchestrator-scan vuln_assessment",
+    "test:orchestrator:compliance": "node tests/e2e/run-tests.js --orchestrator-scan compliance",
+    "test:orchestrator:full": "node tests/e2e/run-tests.js --orchestrator-scan full"
   },
   "devDependencies": {
     "dotenv": "^17.2.3"
